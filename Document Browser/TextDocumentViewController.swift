@@ -10,39 +10,19 @@ import os.log
 
 /// - Tag: textDocumentViewController
 class TextDocumentViewController: UIViewController, UITextViewDelegate, TextDocumentDelegate {
-    
-    private var browserTransition: DocumentBrowserTransitioningDelegate?
-    public var transitionController: UIDocumentBrowserTransitionController? {
-        didSet {
-            if let controller = transitionController {
-                // Set the transition animation.
-                modalPresentationStyle = .custom
-                browserTransition = DocumentBrowserTransitioningDelegate(withTransitionController: controller)
-                transitioningDelegate = browserTransition
-                
-            } else {
-                modalPresentationStyle = .none
-                browserTransition = nil
-                transitioningDelegate = nil
-            }
-        }
-    }
-    
+
     @IBOutlet weak var textView: UITextView!
     @IBOutlet weak var progressBar: UIProgressView!
     @IBOutlet weak var doneButton: UIBarButtonItem!
-    @IBOutlet weak var bottomConstraint: NSLayoutConstraint!
-    @IBOutlet weak var toolbarHeightConstraint: NSLayoutConstraint!
-    
+
     private var keyboardAppearObserver: Any?
     private var keyboardDisappearObserver: Any?
     
-    public var document: TextDocument? {
-        didSet {
-            if let doc = document {
-                doc.delegate = self
-            }
-        }
+    var document: TextDocument!
+    
+    func setDocument(_ document: TextDocument, completion: @escaping () -> Void) {
+        self.document = document
+        loadViewIfNeeded()
     }
     
     override init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
@@ -54,55 +34,47 @@ class TextDocumentViewController: UIViewController, UITextViewDelegate, TextDocu
         super.init(coder: aDecoder)
         setupNotifications()
     }
-    
-    deinit {
-        let notificationCenter = NotificationCenter.default
-        
-        if let appearObserver = keyboardAppearObserver {
-            notificationCenter.removeObserver(appearObserver)
-        }
-        
-        if let disappearObserver = keyboardDisappearObserver {
-            notificationCenter.removeObserver(disappearObserver)
-        }
-    }
-    
+
     override func viewDidLoad() {
         super.viewDidLoad()
         
         textView.delegate = self
         doneButton.isEnabled = false
+        
+        if #available(iOS 13.0, *) {
+            /** When turned on, this changes the rendering scale of the text to match the standard text scaling
+                and preserves the original font point sizes when the contents of the text view are copied to the pasteboard.
+                Apps that show a lot of text content, such as a text viewer or editor, should turn this on and use the standard text scaling.
+             
+                For more information, refer to the WWDC 2019 video on session 227 "Font Management and Text Scaling"
+                    https://developer.apple.com/videos/play/wwdc2019/227/
+                        (from around 30 minutes in, and to the end)
+            */
+            textView.usesStandardTextScaling = true
+        }
     }
     
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+                
+        assert(!document.documentState.contains(.closed), "*** Open the document before displaying it. ***")
         
-        guard let doc = document else {
-            fatalError("*** No Document Found! ***")
-        }
+        assert(!document.documentState.contains(.inConflict), "*** Resolve conflicts before displaying the document. ***")
+
+        textView.text = document.text
         
-        assert(!doc.documentState.contains(.closed),
-               "*** Open the document before displaying it. ***")
-        
-        assert(!doc.documentState.contains(.inConflict),
-               "*** Resolve conflicts before displaying the document. ***")
-        
-        textView.text = doc.text
+        // Set the view controller's title to match file document's title.
+        let fileAttributes = try? document.fileURL.resourceValues(forKeys: [URLResourceKey.localizedNameKey])
+        navigationItem.title = fileAttributes?.localizedName
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         
-        guard let doc = document else {
-            fatalError("*** No Document Found! ***")
-        }
-        
-        doc.close { (success) in
-            guard success else {
-                fatalError( "*** Error saving document ***")
-            }
+        document.close { (success) in
+            guard success else { fatalError( "*** Error closing document ***") }
             
-            os_log("==> file Saved!", log: OSLog.default, type: .debug)
+            os_log("==> Document saved and closed", log: .default, type: .debug)
         }
     }
     
@@ -110,49 +82,33 @@ class TextDocumentViewController: UIViewController, UITextViewDelegate, TextDocu
     
     @IBAction func editingDone(_ sender: Any) {
         textView.resignFirstResponder()
-        
-        if let doc = document {
-            doc.autosave(completionHandler: nil)
-        }
     }
     
     @IBAction func returnToDocuments(_ sender: Any) {
-        // Dismiss the editor view.
+        // Dismiss this view controller.
         dismiss(animated: true, completion: nil)
     }
     
     // MARK: - UITextViewDelegate
     
     func textViewDidBeginEditing(_ textView: UITextView) {
-        
         UIView.animate(withDuration: 0.25) {
             self.doneButton.isEnabled = true
         }
-
     }
     
     func textViewDidChange(_ textView: UITextView) {
-        
-        guard let doc = document else {
-            fatalError("*** No Document Found! ***")
-        }
-        
-        doc.text = textView.text
-        doc.updateChangeCount(.done)
+        document.text = textView.text
+        document.updateChangeCount(.done)
     }
     
     func textViewDidEndEditing(_ textView: UITextView) {
-        
         UIView.animate(withDuration: 0.25) {
             self.doneButton.isEnabled = false
         }
-        
-        guard let doc = document else {
-            fatalError("*** No Document Found! ***")
-        }
-        
-        doc.text = textView.text
-        doc.updateChangeCount(.done)
+
+        document.text = textView.text
+        document.updateChangeCount(.done)
     }
     
     // MARK: - UITextDocumentDelegate Methods
@@ -180,92 +136,79 @@ class TextDocumentViewController: UIViewController, UITextViewDelegate, TextDocu
     
     func textDocumentSaveFailed(_ doc: TextDocument) {
         let alert = UIAlertController(
-            title: "Save Error",
-            message: "An attempt to save the document failed",
+            title: NSLocalizedString("SaveErrorTitle", comment: ""),
+            message: NSLocalizedString("SaveErrorTitleMessage", comment: ""),
             preferredStyle: .alert)
         
-        let dismiss = UIAlertAction(title: "OK", style: .default) { (_) in
-            // just dismiss the alert.
-        }
-        
+        let dismiss = UIAlertAction(title: NSLocalizedString("OKTitle", comment: ""), style: .default)
         alert.addAction(dismiss)
+        
         present(alert, animated: true, completion: nil)
     }
     
     // MARK: - Private Methods
     
     private func setupNotifications() {
-        
         let notificationCenter = NotificationCenter.default
-        let mainQueue = OperationQueue.main
         
         keyboardAppearObserver = notificationCenter.addObserver(
-            forName: .UIKeyboardWillShow,
+            forName: UIResponder.keyboardWillShowNotification,
             object: nil,
-            queue: mainQueue) { [weak self](notification) in
-                self?.keyboardWillShow(userInfo: notification.userInfo)
+            queue: nil) { (notification) in
+                self.adjustForKeyboard(notification: notification)
         }
         
         keyboardDisappearObserver = notificationCenter.addObserver(
-            forName: .UIKeyboardWillHide,
+            forName: UIResponder.keyboardWillHideNotification,
             object: nil,
-            queue: mainQueue) { [weak self](notification) in
-                self?.keyboardWillHide(userInfo: notification.userInfo)
+            queue: nil) { (notification) in
+                self.adjustForKeyboard(notification: notification)
         }
     }
     
-    private func keyboardWillShow(userInfo: [AnyHashable: Any]?) {
-        guard let rawFrame =
-            userInfo?[UIKeyboardFrameEndUserInfoKey]
-                as? CGRect else {
-            fatalError("*** Unable to get the keyboard's final frame ***")
+    @objc
+    func adjustForKeyboard(notification: Notification) {
+        let userInfo = notification.userInfo
+
+        guard let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue else { return }
+
+        let keyboardScreenEndFrame = keyboardFrame.cgRectValue
+        let keyboardViewEndFrame = view.convert(keyboardScreenEndFrame, from: view.window)
+
+        if notification.name == UIResponder.keyboardWillHideNotification {
+            textView.contentInset = .zero
+        } else {
+            textView.contentInset = UIEdgeInsets(top: 0,
+                                                 left: 0,
+                                                 bottom: keyboardViewEndFrame.height - view.safeAreaInsets.bottom,
+                                                 right: 0)
         }
-        
+
+        textView.scrollIndicatorInsets = textView.contentInset
+
         guard let animationDuration =
-            userInfo?[UIKeyboardAnimationDurationUserInfoKey]
-                as? Double else {
-            fatalError("*** Unable to get the animation duration ***")
-        }
-        
-        guard let curveInt =
-            userInfo?[UIKeyboardAnimationCurveUserInfoKey] as? Int else {
-            fatalError("*** Unable to get the animation curve ***")
-        }
-        
-        guard let animationCurve =
-            UIViewAnimationCurve(rawValue: curveInt) else {
-            fatalError("*** Unable to parse the animation curve ***")
-        }
-        
-        let height = self.view.convert(rawFrame, from: nil).size.height
-        bottomConstraint.constant = height + 8.0
-        
-        UIViewPropertyAnimator(duration: animationDuration, curve: animationCurve) {
-            self.view.layoutIfNeeded()
-        }.startAnimation()
+            userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey]
+                 as? Double else {
+                     fatalError("*** Unable to get the animation duration ***")
+         }
+         
+         guard let curveInt =
+            userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int else {
+                 fatalError("*** Unable to get the animation curve ***")
+         }
+         
+         guard let animationCurve =
+             UIView.AnimationCurve(rawValue: curveInt) else {
+                 fatalError("*** Unable to parse the animation curve ***")
+         }
+
+         UIViewPropertyAnimator(duration: animationDuration, curve: animationCurve) {
+             self.view.layoutIfNeeded()
+            
+            let selectedRange = self.textView.selectedRange
+            self.textView.scrollRangeToVisible(selectedRange)
+            
+         }.startAnimation()
     }
     
-    private func keyboardWillHide(userInfo: [AnyHashable: Any]?) {
-        guard let animationDuration =
-            userInfo?[UIKeyboardAnimationDurationUserInfoKey]
-                as? Double else {
-                    fatalError("*** Unable to get the animation duration ***")
-        }
-        
-        guard let curveInt =
-            userInfo?[UIKeyboardAnimationCurveUserInfoKey] as? Int else {
-                fatalError("*** Unable to get the animation curve ***")
-        }
-        
-        guard let animationCurve =
-            UIViewAnimationCurve(rawValue: curveInt) else {
-                fatalError("*** Unable to parse the animation curve ***")
-        }
-        
-        bottomConstraint.constant = 20.0
-        
-        UIViewPropertyAnimator(duration: animationDuration, curve: animationCurve) {
-            self.view.layoutIfNeeded()
-        }.startAnimation()
-    }
 }

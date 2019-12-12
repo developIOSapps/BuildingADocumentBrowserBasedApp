@@ -27,10 +27,7 @@ class TextDocument: UIDocument {
     
     public var text = "" {
         didSet {
-            // Notify the delegate when the text changes.
-            if let currentDelegate = delegate {
-                currentDelegate.textDocumentUpdateContent(self)
-            }
+            delegate?.textDocumentUpdateContent(self)
         }
     }
         
@@ -45,19 +42,11 @@ class TextDocument: UIDocument {
         docStateObserver = nil
         super.init(fileURL: url)
         
-        let notificationCenter = NotificationCenter.default
-        let mainQueue = OperationQueue.main
-        
-        docStateObserver = notificationCenter.addObserver(
-            forName: .UIDocumentStateChanged,
+        docStateObserver = NotificationCenter.default.addObserver(
+            forName: UIDocument.stateChangedNotification,
             object: self,
-            queue: mainQueue) { [weak self](_) in
-                
-                guard let doc = self else {
-                    return
-                }
-                
-                doc.updateDocumentState()
+            queue: nil) { _ in
+                self.updateDocumentState()
         }
     }
     
@@ -80,42 +69,33 @@ class TextDocument: UIDocument {
             throw TextDocumentError.unableToEncodeText
         }
         
-        os_log("==> Text Data Saved", log: OSLog.default, type: .debug)
+        os_log("==> Text Data Saved", log: .default, type: .debug)
         
         return data as Any
     }
     
-//    // Uncomment to simulate slow, incremental loading.
-//    override func read(from url: URL) throws {
-//
-//        let group = DispatchGroup()
-//        let backgroundQueue = DispatchQueue(label: "Background Queue", qos: .background)
-//        let theProgress = loadProgress
-//
-//        // Simulate a slow load.
-//        for i in 1..<loadProgress.totalUnitCount {
-//            group.enter()
-//            backgroundQueue.async {
-//                Thread.sleep(forTimeInterval: 0.25)
-//                theProgress.completedUnitCount = i
-//                group.leave()
-//            }
-//        }
-//
-//        // Wait until all the parts have loaded, then call super.
-//        group.wait()
-//        try super.read(from: url)
-//
-//        // Mark the progress as complete
-//        loadProgress.completedUnitCount = loadProgress.totalUnitCount
+    // Uncomment to simulate slow, incremental loading.
+    /*
+    override func read(from url: URL) throws {
+        
+        // Simulate a slow load.
+        for unitCount in 1..<loadProgress.totalUnitCount {
+            Thread.sleep(forTimeInterval: 0.25)
+            loadProgress.completedUnitCount = unitCount
+        }
 
-//    }
-    
+        try super.read(from: url)
+        
+        // Mark the progress as complete
+        loadProgress.completedUnitCount = loadProgress.totalUnitCount
+    }
+    */
+        
     override func load(fromContents contents: Any, ofType typeName: String?) throws {
         
         guard let data = contents as? Data else {
             // This would be a developer error.
-            fatalError("*** \(contents) is not an instance of NSData.***")
+            fatalError("*** \(contents) is not an instance of NSData. ***")
         }
         
         guard let newText = String(data: data, encoding: .utf8) else {
@@ -125,7 +105,7 @@ class TextDocument: UIDocument {
         // Mark the progress as complete
         loadProgress.completedUnitCount = loadProgress.totalUnitCount
         
-        os_log("==> Text Data Loaded", log: OSLog.default, type: .debug)
+        os_log("==> Text Data Loaded", log: .default, type: .debug)
         text = newText
     }
     
@@ -134,28 +114,28 @@ class TextDocument: UIDocument {
     private func updateDocumentState() {
         
         if documentState == .normal {
-            os_log("=> Document entered normal state", log: OSLog.default, type: .debug)
+            os_log("=> Document entered normal state", log: .default, type: .debug)
             if let currentDelegate = delegate {
                 currentDelegate.textDocumentEnableEditing(self)
             }
         }
         
         if documentState.contains(.closed) {
-            os_log("=> Document has closed", log: OSLog.default, type: .debug)
+            os_log("=> Document has closed", log: .default, type: .debug)
             if let currentDelegate = delegate {
                 currentDelegate.textDocumentDisableEditing(self)
             }
         }
         
         if documentState.contains(.editingDisabled) {
-            os_log("=> Document's editing is disabled", log: OSLog.default, type: .debug)
+            os_log("=> Document's editing is disabled", log: .default, type: .debug)
             if let currentDelegate = delegate {
                 currentDelegate.textDocumentDisableEditing(self)
             }
         }
         
         if documentState.contains(.inConflict) {
-            os_log("=> A docuent conflict was detected", log: OSLog.default, type: .debug)
+            os_log("=> A docuent conflict was detected", log: .default, type: .debug)
             resolveDocumentConflict()
         }
         
@@ -180,7 +160,7 @@ class TextDocument: UIDocument {
         } else {
             // If we're not in the middle of a transfer, check to see if a transfer has started.
             if documentState.contains(.progressAvailable) {
-                os_log("=> A transfer is in progress", log: OSLog.default, type: .debug)
+                os_log("=> A transfer is in progress", log: .default, type: .debug)
                 
                 if let currentDelegate = delegate {
                     currentDelegate.textDocumentTransferBegan(self)
@@ -194,7 +174,6 @@ class TextDocument: UIDocument {
         
         // To accept the current version, remove the other versions,
         // and resolve all the unresolved versions.
-        
         do {
             try NSFileVersion.removeOtherVersionsOfItem(at: fileURL)
             
@@ -204,7 +183,8 @@ class TextDocument: UIDocument {
                 }
             }
         } catch let error {
-            os_log("*** Error: %@ ***", log: OSLog.default, type: .error, error.localizedDescription)
+            os_log("*** Error: %@ ***", log: .default, type: .error, error.localizedDescription)
         }
     }
+    
 }
